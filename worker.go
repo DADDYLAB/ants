@@ -24,17 +24,22 @@ package ants
 
 import (
 	"time"
+	"fmt"
+	"errors"
 )
 
 // Worker is the actual executor who runs the tasks,
 // it starts a goroutine that accepts tasks and
 // performs function calls.
 type Worker struct {
+	// Worker now running job Tag
+	Tag string
+
 	// pool who owns this worker.
 	pool *Pool
 
 	// task is a job should be done.
-	task chan f
+	task chan *Job
 
 	// recycleTime will be update when putting a worker back into queue.
 	recycleTime time.Time
@@ -44,13 +49,29 @@ type Worker struct {
 // that performs the function calls.
 func (w *Worker) run() {
 	go func() {
+		// Panic
+		defer w.recover()
+
 		for f := range w.task {
+			w.Tag = f.Tag
 			if f == nil {
 				w.pool.decRunning()
 				return
 			}
-			f()
+			f.F()
 			w.pool.putWorker(w)
 		}
 	}()
+}
+
+func (w *Worker) recover() {
+	if err := recover(); err != nil {
+		if len(w.pool.panicHandlers) > 0 {
+			for _, h := range w.pool.panicHandlers {
+				h.Handle(errors.New(fmt.Sprintf("%v", err)), w)
+			}
+		}
+		w.pool.decRunning()
+		w.pool.DeleteJob(w.Tag)
+	}
 }

@@ -48,8 +48,7 @@ func demoFunc() error {
 
 func main() {
 	defer ants.Release()
-
-	runTimes := 1000
+	runTimes := 10
 
 	// use the common pool
 	var wg sync.WaitGroup
@@ -67,18 +66,18 @@ func main() {
 
 	// use the pool with a function
 	// set 10 the size of goroutine pool and 1 second for expired duration
-	p, _ := ants.NewPoolWithFunc(10, func(i interface{}) error {
-		myFunc(i)
-		wg.Done()
-		return nil
-	})
-	defer p.Release()
-	// submit tasks
-	for i := 0; i < runTimes; i++ {
-		wg.Add(1)
-		p.Serve(int32(i))
-	}
-	wg.Wait()
-	fmt.Printf("running goroutines: %d\n", p.Running())
-	fmt.Printf("finish all tasks, result is %d\n", sum)
+	// p, _ := ants.NewPoolWithFunc(10, func(i interface{}) error {
+	// 	myFunc(i)
+	// 	wg.Done()
+	// 	return nil
+	// })
+	// defer p.Release()
+	// // submit tasks
+	// for i := 0; i < runTimes; i++ {
+	// 	wg.Add(1)
+	// 	p.Serve(int32(i))
+	// }
+	// wg.Wait()
+	// fmt.Printf("running goroutines: %d\n", p.Running())
+	// fmt.Printf("finish all tasks, result is %d\n", sum)
 }

@@ -38,6 +38,10 @@ const (
 // Init a instance pool when importing ants.
 var defaultAntsPool, _ = NewPool(DefaultAntsPoolSize)
 
+func AppendPanicHandler(r PanicRecover) {
+	defaultAntsPool.AppendPanicHandler(r)
+}
+
 // Submit submits a task to pool.
 func Submit(task f) error {
 	return defaultAntsPool.Submit(task)
@@ -45,7 +49,7 @@ func Submit(task f) error {
 
 // Running returns the number of the currently running goroutines.
 func Running() int {
-	return defaultAntsPool.Running()
+	return defaultAntsPool.RunningJobCount()
 }
 
 // Cap returns the capacity of this default pool.
@@ -55,7 +59,7 @@ func Cap() int {
 
 // Free returns the available goroutines to work.
 func Free() int {
-	return defaultAntsPool.Free()
+	return defaultAntsPool.FreeJobCount()
 }
 
 // Release Closes the default pool.

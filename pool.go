@@ -26,11 +26,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"strconv"
 )
 
 type sig struct{}
 
-type f func() error
+type Job struct {
+	Tag string
+	F   f
+}
+
+type f func()
 
 // Pool accept the tasks from client,it limits the total
 // of goroutines to a given number by recycling goroutines.
@@ -54,6 +60,10 @@ type Pool struct {
 	lock sync.Mutex
 
 	once sync.Once
+
+	panicHandlers []PanicRecover
+
+	jobs sync.Map
 }
 
 // clear expired workers periodically.
@@ -63,7 +73,7 @@ func (p *Pool) periodicallyPurge() {
 		currentTime := time.Now()
 		p.lock.Lock()
 		idleWorkers := p.workers
-		if len(idleWorkers) == 0 && p.Running() == 0 && len(p.release) > 0 {
+		if len(idleWorkers) == 0 && p.RunningJobCount() == 0 && len(p.release) > 0 {
 			p.lock.Unlock()
 			return
 		}
@@ -87,9 +97,23 @@ func (p *Pool) periodicallyPurge() {
 	}
 }
 
+func initPool() *Pool {
+	return &Pool{
+		release:       make(chan sig, 1),
+		panicHandlers: make([]PanicRecover, 0),
+	}
+}
+
 // NewPool generates an instance of ants pool.
 func NewPool(size int) (*Pool, error) {
-	return NewTimingPool(size, DefaultCleanIntervalTime)
+	if size <= 0 {
+		return nil, ErrInvalidPoolSize
+	}
+
+	p := initPool()
+	p.capacity = int32(size)
+
+	return p, nil
 }
 
 // NewTimingPool generates an instance of ants pool with a custom timed task.
@@ -100,33 +124,49 @@ func NewTimingPool(size, expiry int) (*Pool, error) {
 	if expiry <= 0 {
 		return nil, ErrInvalidPoolExpiry
 	}
-	p := &Pool{
-		capacity:       int32(size),
-		release:        make(chan sig, 1),
-		expiryDuration: time.Duration(expiry) * time.Second,
-	}
+
+	p := initPool()
+	p.capacity = int32(size)
+	p.expiryDuration = time.Duration(expiry) * time.Second
+
 	go p.periodicallyPurge()
 	return p, nil
 }
 
-//-------------------------------------------------------------------------
+// -------------------------------------------------------------------------
+
+func (p *Pool) AppendPanicHandler(recover PanicRecover) {
+	p.panicHandlers = append(p.panicHandlers, recover)
+}
 
 // Submit submits a task to this pool.
-func (p *Pool) Submit(task f) error {
+func (p *Pool) Submit(task f, tag ...string) error {
 	if len(p.release) > 0 {
 		return ErrPoolClosed
 	}
-	p.getWorker().task <- task
+
+	jobTag := "Job" + strconv.Itoa(p.RunningJobCount())
+	if len(tag) > 0 {
+		jobTag = tag[0]
+	}
+
+	newJob := &Job{
+		Tag: jobTag,
+		F:   task,
+	}
+
+	p.getWorker().task <- newJob
+	p.jobs.Store(jobTag, task)
 	return nil
 }
 
 // Running returns the number of the currently running goroutines.
-func (p *Pool) Running() int {
+func (p *Pool) RunningJobCount() int {
 	return int(atomic.LoadInt32(&p.running))
 }
 
 // Free returns the available goroutines to work.
-func (p *Pool) Free() int {
+func (p *Pool) FreeJobCount() int {
 	return int(atomic.LoadInt32(&p.capacity) - atomic.LoadInt32(&p.running))
 }
 
@@ -141,7 +181,7 @@ func (p *Pool) ReSize(size int) {
 		return
 	}
 	atomic.StoreInt32(&p.capacity, int32(size))
-	diff := p.Running() - size
+	diff := p.RunningJobCount() - size
 	if diff > 0 {
 		for i := 0; i < diff; i++ {
 			p.getWorker().task <- nil
@@ -165,7 +205,7 @@ func (p *Pool) Release() error {
 	return nil
 }
 
-//-------------------------------------------------------------------------
+// -------------------------------------------------------------------------
 
 // incRunning increases the number of the currently running goroutines.
 func (p *Pool) incRunning() {
@@ -186,7 +226,7 @@ func (p *Pool) getWorker() *Worker {
 	idleWorkers := p.workers
 	n := len(idleWorkers) - 1
 	if n < 0 {
-		waiting = p.Running() >= p.Cap()
+		waiting = p.RunningJobCount() >= p.Cap()
 	} else {
 		w = idleWorkers[n]
 		idleWorkers[n] = nil
@@ -212,7 +252,7 @@ func (p *Pool) getWorker() *Worker {
 	} else if w == nil {
 		w = &Worker{
 			pool: p,
-			task: make(chan f, 1),
+			task: make(chan *Job, 1),
 		}
 		w.run()
 		p.incRunning()
@@ -223,7 +263,13 @@ func (p *Pool) getWorker() *Worker {
 // putWorker puts a worker back into free pool, recycling the goroutines.
 func (p *Pool) putWorker(worker *Worker) {
 	worker.recycleTime = time.Now()
+	p.DeleteJob(worker.Tag)
+
 	p.lock.Lock()
 	p.workers = append(p.workers, worker)
 	p.lock.Unlock()
+}
+
+func (p *Pool) DeleteJob(tag string) {
+	p.jobs.Delete(tag)
 }
