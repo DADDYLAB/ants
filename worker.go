@@ -26,6 +26,7 @@ import (
 	"time"
 	"fmt"
 	"errors"
+	"runtime"
 )
 
 // Worker is the actual executor who runs the tasks,
@@ -66,9 +67,13 @@ func (w *Worker) run() {
 
 func (w *Worker) recover() {
 	if err := recover(); err != nil {
+		const size = 64 << 10
+		buf := make([]byte, size)
+		buf = buf[:runtime.Stack(buf, false)]
+
 		if len(w.pool.panicHandlers) > 0 {
 			for _, h := range w.pool.panicHandlers {
-				h.Handle(errors.New(fmt.Sprintf("%v", err)), w)
+				h.Handle(errors.New(fmt.Sprintf("%v ，Stack: %s", err, buf)), w)
 			}
 		}
 		w.pool.decRunning()
