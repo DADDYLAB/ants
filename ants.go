@@ -47,6 +47,10 @@ func Submit(task f) error {
 	return defaultAntsPool.Submit(task)
 }
 
+func Runnable(r Runner) error {
+	return defaultAntsPool.Runnable(r)
+}
+
 // Running returns the number of the currently running goroutines.
 func Running() int {
 	return defaultAntsPool.RunningJobCount()

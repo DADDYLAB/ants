@@ -36,6 +36,10 @@ type Job struct {
 	F   f
 }
 
+type Runner interface {
+	Work()
+}
+
 type f func()
 
 // Pool accept the tasks from client,it limits the total
@@ -104,7 +108,7 @@ func initPool() *Pool {
 	}
 }
 
-// NewPool generates an instance of ants pool.
+// NewPool generates an instance of ants pool. (固定 Size 的 Pool)
 func NewPool(size int) (*Pool, error) {
 	if size <= 0 {
 		return nil, ErrInvalidPoolSize
@@ -116,7 +120,7 @@ func NewPool(size int) (*Pool, error) {
 	return p, nil
 }
 
-// NewTimingPool generates an instance of ants pool with a custom timed task.
+// NewTimingPool generates an instance of ants pool with a custom timed task. (如果协程一定时间没有任务则杀掉自己)
 func NewTimingPool(size, expiry int) (*Pool, error) {
 	if size <= 0 {
 		return nil, ErrInvalidPoolSize
@@ -158,6 +162,10 @@ func (p *Pool) Submit(task f, tag ...string) error {
 	p.getWorker().task <- newJob
 	p.jobs.Store(jobTag, task)
 	return nil
+}
+
+func (p *Pool) Runnable(r Runner) error {
+	return p.Submit(r.Work)
 }
 
 // Running returns the number of the currently running goroutines.

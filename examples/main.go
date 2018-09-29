@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/panjf2000/ants"
+	"github.com/HYY-yu/ants"
 )
 
 var sum int32
@@ -46,18 +46,33 @@ func demoFunc() error {
 	return nil
 }
 
+type Jobs struct {
+	// 结构体里带数据
+	A string
+	B string
+}
+
+func (self *Jobs) Work() {
+	fmt.Println("A :" + self.A + " B：" + self.B)
+}
+
 func main() {
 	defer ants.Release()
 	runTimes := 10
+
+	j := &Jobs{
+		A: "A",
+		B: "B",
+	}
+	ants.Runnable(j)
 
 	// use the common pool
 	var wg sync.WaitGroup
 	for i := 0; i < runTimes; i++ {
 		wg.Add(1)
-		ants.Submit(func() error {
+		ants.Submit(func() {
 			demoFunc()
 			wg.Done()
-			return nil
 		})
 	}
 	wg.Wait()
