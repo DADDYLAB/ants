@@ -23,10 +23,10 @@
 package ants
 
 import (
-	"time"
-	"fmt"
 	"errors"
+	"fmt"
 	"runtime"
+	"time"
 )
 
 // Worker is the actual executor who runs the tasks,
@@ -49,18 +49,20 @@ type Worker struct {
 // run starts a goroutine to repeat the process
 // that performs the function calls.
 func (w *Worker) run() {
+	w.pool.incRunning()
 	go func() {
 		// Panic
 		defer w.recover()
 
 		for f := range w.task {
-			w.Tag = f.Tag
 			if f == nil {
 				w.pool.decRunning()
+				w.pool.workerCache.Put(w)
 				return
 			}
+			w.Tag = f.Tag
 			f.F()
-			w.pool.putWorker(w)
+			w.pool.revertWorker(w)
 		}
 	}()
 }
@@ -76,6 +78,7 @@ func (w *Worker) recover() {
 				h.Handle(errors.New(fmt.Sprintf("%v ，Stack: %s", err, buf)), w)
 			}
 		}
+
 		w.pool.decRunning()
 		w.pool.DeleteJob(w.Tag)
 	}

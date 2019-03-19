@@ -28,7 +28,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/HYY-yu/ants"
+	"github.com/DADDYLAB/ants"
 )
 
 var sum int32
@@ -58,7 +58,7 @@ func (self *Jobs) Work() {
 
 func main() {
 	defer ants.Release()
-	runTimes := 10
+	runTimes := 100
 
 	j := &Jobs{
 		A: "A",

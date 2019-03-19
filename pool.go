@@ -23,13 +23,11 @@
 package ants
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
-	"strconv"
 )
-
-type sig struct{}
 
 type Job struct {
 	Tag string
@@ -58,12 +56,19 @@ type Pool struct {
 	workers []*Worker
 
 	// release is used to notice the pool to closed itself.
-	release chan sig
+	release int32
 
 	// lock for synchronous operation.
 	lock sync.Mutex
 
+	// cond for waiting to get a idle worker.
+	cond *sync.Cond
+
+	// once makes sure releasing this pool will just be done for one time.
 	once sync.Once
+
+	// workerCache speeds up the obtainment of the an usable worker in function:retrieveWorker.
+	workerCache sync.Pool
 
 	panicHandlers []PanicRecover
 
@@ -73,11 +78,13 @@ type Pool struct {
 // clear expired workers periodically.
 func (p *Pool) periodicallyPurge() {
 	heartbeat := time.NewTicker(p.expiryDuration)
+	defer heartbeat.Stop()
+
 	for range heartbeat.C {
 		currentTime := time.Now()
 		p.lock.Lock()
 		idleWorkers := p.workers
-		if len(idleWorkers) == 0 && p.RunningJobCount() == 0 && len(p.release) > 0 {
+		if len(idleWorkers) == 0 && p.RunningJobCount() == 0 && atomic.LoadInt32(&p.release) == 1 {
 			p.lock.Unlock()
 			return
 		}
@@ -103,7 +110,6 @@ func (p *Pool) periodicallyPurge() {
 
 func initPool() *Pool {
 	return &Pool{
-		release:       make(chan sig, 1),
 		panicHandlers: make([]PanicRecover, 0),
 	}
 }
@@ -116,6 +122,7 @@ func NewPool(size int) (*Pool, error) {
 
 	p := initPool()
 	p.capacity = int32(size)
+	p.cond = sync.NewCond(&p.lock)
 
 	return p, nil
 }
@@ -133,6 +140,7 @@ func NewTimingPool(size, expiry int) (*Pool, error) {
 	p.capacity = int32(size)
 	p.expiryDuration = time.Duration(expiry) * time.Second
 
+	p.cond = sync.NewCond(&p.lock)
 	go p.periodicallyPurge()
 	return p, nil
 }
@@ -145,7 +153,7 @@ func (p *Pool) AppendPanicHandler(recover PanicRecover) {
 
 // Submit submits a task to this pool.
 func (p *Pool) Submit(task f, tag ...string) error {
-	if len(p.release) > 0 {
+	if 1 == atomic.LoadInt32(&p.release) {
 		return ErrPoolClosed
 	}
 
@@ -190,17 +198,15 @@ func (p *Pool) ReSize(size int) {
 	}
 	atomic.StoreInt32(&p.capacity, int32(size))
 	diff := p.RunningJobCount() - size
-	if diff > 0 {
-		for i := 0; i < diff; i++ {
-			p.getWorker().task <- nil
-		}
+	for i := 0; i < diff; i++ {
+		p.getWorker().task <- nil
 	}
 }
 
 // Release Closes this pool.
 func (p *Pool) Release() error {
 	p.once.Do(func() {
-		p.release <- sig{}
+		atomic.StoreInt32(&p.release, 1)
 		p.lock.Lock()
 		idleWorkers := p.workers
 		for i, w := range idleWorkers {
@@ -228,53 +234,50 @@ func (p *Pool) decRunning() {
 // getWorker returns a available worker to run the tasks.
 func (p *Pool) getWorker() *Worker {
 	var w *Worker
-	waiting := false
 
 	p.lock.Lock()
 	idleWorkers := p.workers
 	n := len(idleWorkers) - 1
-	if n < 0 {
-		waiting = p.RunningJobCount() >= p.Cap()
-	} else {
+	if n >= 0 {
 		w = idleWorkers[n]
 		idleWorkers[n] = nil
 		p.workers = idleWorkers[:n]
-	}
-	p.lock.Unlock()
-
-	if waiting {
-		for {
-			p.lock.Lock()
-			idleWorkers = p.workers
-			l := len(idleWorkers) - 1
-			if l < 0 {
-				p.lock.Unlock()
-				continue
+		p.lock.Unlock()
+	} else if p.RunningJobCount() < p.Cap() {
+		p.lock.Unlock()
+		if cacheWorker := p.workerCache.Get(); cacheWorker != nil {
+			w = cacheWorker.(*Worker)
+		} else {
+			w = &Worker{
+				pool: p,
+				task: make(chan *Job, workerChanCap),
 			}
-			w = idleWorkers[l]
-			idleWorkers[l] = nil
-			p.workers = idleWorkers[:l]
-			p.lock.Unlock()
-			break
-		}
-	} else if w == nil {
-		w = &Worker{
-			pool: p,
-			task: make(chan *Job, 1),
 		}
 		w.run()
-		p.incRunning()
+	} else {
+		for {
+			p.cond.Wait()
+			l := len(p.workers) - 1
+			if l < 0 {
+				continue
+			}
+			w = p.workers[l]
+			p.workers[l] = nil
+			p.workers = p.workers[:l]
+			break
+		}
+		p.lock.Unlock()
 	}
 	return w
 }
 
-// putWorker puts a worker back into free pool, recycling the goroutines.
-func (p *Pool) putWorker(worker *Worker) {
+// revertWorker puts a worker back into free pool, recycling the goroutines.
+func (p *Pool) revertWorker(worker *Worker) {
 	worker.recycleTime = time.Now()
-	p.DeleteJob(worker.Tag)
-
 	p.lock.Lock()
 	p.workers = append(p.workers, worker)
+	// Notify the invoker stuck in 'retrieveWorker()' of there is an available worker in the worker queue.
+	p.cond.Signal()
 	p.lock.Unlock()
 }
 
